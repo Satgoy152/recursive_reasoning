@@ -202,11 +202,12 @@ class GPT2AttentionWithRoPE(nn.Module):
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
 
-        outputs = (attn_output,)
-        if output_attentions:
-            outputs += (attn_weights,)
+        # GPT2Block expects (output, weights) or (output, weights, cache)
+        # Always return weights (or None if not needed)
+        outputs = (attn_output, attn_weights if output_attentions else None)
+
         if use_cache:
-            outputs += (None,)  # We don't use KV cache with RoPE in this implementation
+            outputs = outputs + (None,)  # We don't use KV cache with RoPE in this implementation
 
         return outputs
 
