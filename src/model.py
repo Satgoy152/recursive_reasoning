@@ -145,7 +145,12 @@ class GPT2AttentionWithRoPE(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         layer_past: Optional[Tuple[torch.Tensor]] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
         use_cache: bool = False,
+        output_attentions: bool = False,
+        past_key_values: Optional[Tuple[torch.Tensor]] = None,
     ):
         # Compute Q, K, V
         qkv = self.c_attn(hidden_states)
@@ -186,12 +191,18 @@ class GPT2AttentionWithRoPE(nn.Module):
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
         attn_weights = self.attn_dropout(attn_weights)
 
+        # Apply head mask if provided
+        if head_mask is not None:
+            attn_weights = attn_weights * head_mask
+
         attn_output = torch.matmul(attn_weights, value)
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
 
         outputs = (attn_output,)
+        if output_attentions:
+            outputs += (attn_weights,)
         if use_cache:
             outputs += (None,)  # We don't use KV cache with RoPE in this implementation
 
