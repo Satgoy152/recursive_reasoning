@@ -151,6 +151,8 @@ class GPT2AttentionWithRoPE(nn.Module):
         use_cache: bool = False,
         output_attentions: bool = False,
         past_key_values: Optional[Tuple[torch.Tensor]] = None,
+        cache_position: Optional[torch.Tensor] = None,
+        **kwargs,  # Catch any other kwargs from newer transformers versions
     ):
         # Compute Q, K, V
         qkv = self.c_attn(hidden_states)
