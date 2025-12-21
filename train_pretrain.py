@@ -32,7 +32,7 @@ def main():
         seq_len_x=512,
         seq_len_y=512,
         use_rope=True,
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,  # Disabled - we have enough memory with 2x A40
     )
 
     # Pretraining configuration
