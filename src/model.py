@@ -248,11 +248,56 @@ class GPT2ModelWithRoPE(nn.Module):
         self.gradient_checkpointing = False
 
     def _make_block_with_rope(self, config: GPT2Config, layer_idx: int):
-        """Create a GPT2 block with RoPE attention."""
+        """Create a GPT2 block with RoPE attention wrapped for use_causal_mask support."""
         # We need to manually construct the block with our custom attention
         block = GPT2Block(config, layer_idx=layer_idx)
         # Replace the attention module
         block.attn = GPT2AttentionWithRoPE(config, layer_idx=layer_idx)
+
+        # Store original forward for wrapping
+        original_forward = block.forward
+
+        # Wrap the block's forward to intercept and pass use_causal_mask to attention
+        def wrapped_forward(hidden_states, attention_mask=None, use_causal_mask=True, **kwargs):
+            # Temporarily set use_causal_mask on the attention module
+            # We'll pass it via kwargs to attention
+            layer_past = kwargs.get('layer_past', None)
+            head_mask = kwargs.get('head_mask', None)
+            encoder_hidden_states = kwargs.get('encoder_hidden_states', None)
+            encoder_attention_mask = kwargs.get('encoder_attention_mask', None)
+            use_cache = kwargs.get('use_cache', False)
+            output_attentions = kwargs.get('output_attentions', False)
+
+            # Call attention with use_causal_mask
+            residual = hidden_states
+            hidden_states = block.ln_1(hidden_states)
+            attn_output, attn_weights = block.attn(
+                hidden_states,
+                attention_mask=attention_mask,
+                layer_past=layer_past,
+                head_mask=head_mask,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                use_causal_mask=use_causal_mask,
+            )
+            hidden_states = attn_output + residual
+
+            # Feed-forward
+            residual = hidden_states
+            hidden_states = block.ln_2(hidden_states)
+            feed_forward_hidden_states = block.mlp(hidden_states)
+            hidden_states = residual + feed_forward_hidden_states
+
+            outputs = (hidden_states,)
+            if output_attentions:
+                outputs += (attn_weights,)
+            if use_cache:
+                outputs += (None,)  # No cache
+
+            return outputs
+
+        # Replace the forward method
+        block.forward = wrapped_forward
         return block
 
     def forward(
@@ -292,14 +337,15 @@ class GPT2ModelWithRoPE(nn.Module):
         # Forward through transformer blocks
         for i, block in enumerate(self.h):
             if self.gradient_checkpointing and self.training:
-                # Note: gradient checkpointing doesn't easily support extra kwargs
-                # We pass use_causal_mask via a wrapper
-                def custom_forward(hidden_states, attention_mask):
-                    # Access the attention module and pass use_causal_mask
-                    return block(hidden_states, attention_mask=attention_mask, use_causal_mask=use_causal_mask)[0]
+                # For gradient checkpointing, we need to pass use_causal_mask via closure
+                # Create a closure that captures use_causal_mask
+                def create_custom_forward(block, use_causal_mask):
+                    def custom_forward(hidden_states, attention_mask):
+                        return block(hidden_states, attention_mask=attention_mask, use_causal_mask=use_causal_mask)[0]
+                    return custom_forward
 
                 hidden_states = self._gradient_checkpointing_func(
-                    custom_forward,
+                    create_custom_forward(block, use_causal_mask),
                     hidden_states,
                     attention_mask,
                 )
