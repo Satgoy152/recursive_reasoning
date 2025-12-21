@@ -152,6 +152,7 @@ class GPT2AttentionWithRoPE(nn.Module):
         output_attentions: bool = False,
         past_key_values: Optional[Tuple[torch.Tensor]] = None,
         cache_position: Optional[torch.Tensor] = None,
+        use_causal_mask: bool = True,  # CRITICAL: Allow bidirectional attention for reasoning
         **kwargs,  # Catch any other kwargs from newer transformers versions
     ):
         # Compute Q, K, V
@@ -183,9 +184,16 @@ class GPT2AttentionWithRoPE(nn.Module):
         attn_weights = torch.matmul(query, key.transpose(-1, -2))
         attn_weights = attn_weights / math.sqrt(self.head_dim)
 
-        # Causal mask
-        causal_mask = self.bias[:, :, :seq_len, :seq_len]
-        attn_weights = torch.where(causal_mask, attn_weights, torch.tensor(-1e4, dtype=attn_weights.dtype, device=attn_weights.device))
+        # CRITICAL FIX: Conditional masking for bidirectional reasoning
+        # During refinement (use_causal_mask=False), latent tokens can attend to all tokens
+        # During autoregressive generation (use_causal_mask=True), enforce causality
+        if use_causal_mask:
+            causal_mask = self.bias[:, :, :seq_len, :seq_len]
+            attn_weights = torch.where(
+                causal_mask,
+                attn_weights,
+                torch.tensor(-1e4, dtype=attn_weights.dtype, device=attn_weights.device)
+            )
 
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
@@ -252,6 +260,7 @@ class GPT2ModelWithRoPE(nn.Module):
         input_ids: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        use_causal_mask: bool = True,  # CRITICAL: Control causal vs bidirectional attention
     ):
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds")
@@ -283,13 +292,19 @@ class GPT2ModelWithRoPE(nn.Module):
         # Forward through transformer blocks
         for i, block in enumerate(self.h):
             if self.gradient_checkpointing and self.training:
+                # Note: gradient checkpointing doesn't easily support extra kwargs
+                # We pass use_causal_mask via a wrapper
+                def custom_forward(hidden_states, attention_mask):
+                    # Access the attention module and pass use_causal_mask
+                    return block(hidden_states, attention_mask=attention_mask, use_causal_mask=use_causal_mask)[0]
+
                 hidden_states = self._gradient_checkpointing_func(
-                    block.__call__,
+                    custom_forward,
                     hidden_states,
                     attention_mask,
                 )
             else:
-                outputs = block(hidden_states, attention_mask=attention_mask)
+                outputs = block(hidden_states, attention_mask=attention_mask, use_causal_mask=use_causal_mask)
                 hidden_states = outputs[0]
 
         hidden_states = self.ln_f(hidden_states)
@@ -377,7 +392,10 @@ class HybridTRM(nn.Module):
 
     def forward_refine(self, inputs_embeds: torch.Tensor) -> torch.Tensor:
         """
-        Refinement pass: process inputs through transformer.
+        Refinement pass: process inputs through transformer with BIDIRECTIONAL attention.
+
+        CRITICAL: During refinement, latent tokens need to attend to ALL tokens (including future ones)
+        to perform reasoning. This is the key difference from standard autoregressive models.
 
         Args:
             inputs_embeds: Combined [x, z] embeddings
@@ -385,7 +403,8 @@ class HybridTRM(nn.Module):
         Returns:
             Updated hidden states
         """
-        outputs = self.transformer(inputs_embeds=inputs_embeds)
+        # CRITICAL FIX: Use bidirectional attention for reasoning
+        outputs = self.transformer(inputs_embeds=inputs_embeds, use_causal_mask=False)
         return outputs
 
     def forward_ar(
@@ -394,7 +413,12 @@ class HybridTRM(nn.Module):
         y_ids: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Autoregressive pass: generate predictions for target sequence.
+        Autoregressive pass: generate predictions for target sequence with CAUSAL attention.
+
+        During AR generation, we need causal masking for the target tokens.
+        Note: Ideally, [x, z] should be bidirectional and only [y] should be causal (prefix-LM),
+        but for simplicity we use full causal masking here. The key reasoning already happened
+        in forward_refine with bidirectional attention.
 
         Args:
             x_z_embeds: Combined [x, z] embeddings after refinement
@@ -412,8 +436,8 @@ class HybridTRM(nn.Module):
         # Concatenate: [x, z, y]
         combined_embeds = torch.cat([x_z_embeds, y_embeds], dim=1)
 
-        # Forward pass
-        outputs = self.transformer(inputs_embeds=combined_embeds)
+        # Forward pass with causal masking for autoregressive generation
+        outputs = self.transformer(inputs_embeds=combined_embeds, use_causal_mask=True)
 
         # Get logits for target sequence only
         logits = self.lm_head(outputs[:, -y_len:, :])
@@ -525,7 +549,7 @@ class HybridTRM(nn.Module):
         # Embed inputs
         x_embeds = self.transformer.wte(x_ids)
 
-        # Initialize and refine latents
+        # Initialize and refine latents with BIDIRECTIONAL attention
         z_embeds = self.latent_embeddings.expand(batch_size, -1, -1)
         current_input = torch.cat([x_embeds, z_embeds], dim=1)
 
@@ -534,13 +558,13 @@ class HybridTRM(nn.Module):
             z_embeds = output_embeds[:, -self.config.n_latents:, :]
             current_input = torch.cat([x_embeds, z_embeds], dim=1)
 
-        # Autoregressive generation
+        # Autoregressive generation with CAUSAL attention
         generated = []
         context = current_input
 
         for _ in range(max_new_tokens):
-            # Forward pass
-            outputs = self.transformer(inputs_embeds=context)
+            # Forward pass with causal masking for generation
+            outputs = self.transformer(inputs_embeds=context, use_causal_mask=True)
             logits = self.lm_head(outputs[:, -1, :])  # (batch, vocab_size)
 
             # Apply temperature
