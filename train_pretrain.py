@@ -48,7 +48,7 @@ def main():
         max_grad_norm=1.0,
         checkpoint_every=5000,
         eval_every=2000,
-        log_every=10,  # More frequent logging to see progress
+        log_every=100,  # More frequent logging to see progress
         eval_samples=1000,
         mixed_precision="bf16",  # BF16 for A40
         seed=42,

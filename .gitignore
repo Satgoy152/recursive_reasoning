@@ -1,0 +1,3 @@
+wandb/
+src/__pycache__
+logs/
