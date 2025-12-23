@@ -113,8 +113,8 @@ def get_pretrain_dataloader(
     dataloader = DataLoader(
         dataset,
         batch_size=config.batch_size_per_gpu,
-        num_workers=4,  # Parallel data loading
-        pin_memory=True,
+        num_workers=0,  # Reduce memory usage - no parallel data loading
+        pin_memory=False,  # Disable to save memory
     )
 
     return dataloader

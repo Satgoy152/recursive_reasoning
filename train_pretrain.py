@@ -27,7 +27,7 @@ def main():
     model_config = ModelConfig(
         base_model="gpt2",  # GPT-2 Small (124M)
         n_latents=64,
-        n_sup=4,  # REDUCED from 8 to save memory
+        n_sup=2,  # Minimum for deep supervision
         t_loops=3,
         seq_len_x=512,
         seq_len_y=512,
@@ -43,8 +43,8 @@ def main():
         weight_decay=0.1,
         warmup_steps=2000,
         target_tokens=10_000_000_000,  # 10B tokens
-        batch_size_per_gpu=16,  # REDUCED from 32 to save memory
-        gradient_accumulation_steps=2,  # Keep effective batch size = 32
+        batch_size_per_gpu=4,  # VERY small to avoid OOM
+        gradient_accumulation_steps=8,  # Effective batch = 4 * 8 * 2 GPUs = 64
         max_grad_norm=1.0,
         checkpoint_every=5000,
         eval_every=2000,
@@ -117,24 +117,13 @@ def main():
         split="train",
     )
 
-    # Validation dataloader
-    if accelerator.is_main_process:
-        print("Creating validation dataset (sampling 1000 examples)...")
-
-    eval_examples = create_validation_dataset(
-        train_dataloader,
-        num_samples=train_config.eval_samples,
-    )
-
-    eval_dataloader = torch.utils.data.DataLoader(
-        eval_examples,
-        batch_size=train_config.batch_size_per_gpu,
-        shuffle=False,
-    )
+    # Skip validation dataset for now to save memory
+    # We'll create it on-the-fly during evaluation
+    eval_dataloader = None
 
     if accelerator.is_main_process:
         print(f"✓ Dataloaders initialized")
-        print(f"  Eval samples: {len(eval_examples)}")
+        print(f"  Eval: Will sample on-the-fly during eval steps")
 
     # ========================================================================
     # Initialize Optimizer and Scheduler

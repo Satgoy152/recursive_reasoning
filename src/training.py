@@ -34,7 +34,10 @@ def train_step(
     step: int,
 ) -> Dict[str, float]:
     """
-    Single training step.
+    Single training step with memory-efficient supervision loop.
+
+    CRITICAL: We backprop INSIDE the supervision loop to avoid keeping all
+    supervision losses in memory simultaneously.
 
     Args:
         model: HybridTRM model
@@ -49,36 +52,84 @@ def train_step(
     Returns:
         Dictionary of metrics
     """
+    import torch.nn as nn
+
     x_ids, y_ids = batch
     x_ids = x_ids.to(accelerator.device)
     y_ids = y_ids.to(accelerator.device)
 
-    # Forward pass (includes deep supervision loop)
+    # Get model config
+    unwrapped_model = accelerator.unwrap_model(model)
+    n_sup = unwrapped_model.config.n_sup
+    t_loops = unwrapped_model.config.t_loops
+
+    device = x_ids.device
+    batch_size = x_ids.size(0)
+
+    # Embed inputs
+    x_embeds = unwrapped_model.transformer.wte(x_ids)
+
+    # Initialize latent embeddings
+    z_embeds = unwrapped_model.latent_embeddings.expand(batch_size, -1, -1)
+
+    supervision_losses = []
+
+    # CRITICAL: Deep supervision loop with IMMEDIATE backprop to save memory
+    for sup_step in range(n_sup):
+        # Refinement loops
+        current_input = torch.cat([x_embeds, z_embeds], dim=1)
+
+        for t in range(t_loops):
+            is_last_loop = (t == t_loops - 1)
+
+            # Only compute gradients on last loop
+            with torch.set_grad_enabled(is_last_loop):
+                output_embeds = unwrapped_model.forward_refine(current_input)
+                z_embeds = output_embeds[:, -unwrapped_model.config.n_latents:, :]
+                current_input = torch.cat([x_embeds, z_embeds], dim=1)
+
+        # Autoregressive generation loss
+        with accelerator.accumulate(model):
+            logits_y = unwrapped_model.forward_ar(current_input, y_ids)
+
+            # Compute cross-entropy loss
+            shift_logits = logits_y[:, :-1, :].contiguous()
+            shift_labels = y_ids[:, 1:].contiguous()
+
+            loss = nn.functional.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                reduction='mean'
+            )
+
+            # Scale loss by n_sup (so average is correct)
+            scaled_loss = loss / n_sup
+
+            # CRITICAL: Backward pass INSIDE the loop to free memory
+            accelerator.backward(scaled_loss)
+
+            supervision_losses.append(loss.item())
+
+        # Detach latents for next supervision step
+        z_embeds = z_embeds.detach()
+
+    # Gradient clipping and optimizer step (after all supervision steps)
     with accelerator.accumulate(model):
-        loss, model_metrics = model(x_ids, y_ids)
-
-        # Backward pass
-        accelerator.backward(loss)
-
-        # Gradient clipping
         if accelerator.sync_gradients:
             accelerator.clip_grad_norm_(model.parameters(), max_grad_norm)
 
-        # Optimizer step
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
         optimizer.zero_grad()
 
     # Gather metrics
+    avg_loss = sum(supervision_losses) / len(supervision_losses)
     metrics = {
-        "loss": loss.item(),
+        "loss": avg_loss,
         "lr": optimizer.param_groups[0]["lr"],
+        "avg_supervision_loss": avg_loss,
     }
-
-    # Add model-specific metrics
-    if "avg_supervision_loss" in model_metrics:
-        metrics["avg_supervision_loss"] = model_metrics["avg_supervision_loss"]
 
     return metrics
 
