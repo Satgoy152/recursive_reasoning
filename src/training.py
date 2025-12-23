@@ -292,6 +292,11 @@ def train(
         accelerator.num_processes,
     )
 
+    # Progress bar
+    from tqdm import tqdm
+    if accelerator.is_main_process:
+        pbar = tqdm(total=max_steps, initial=start_step, desc="Training")
+
     while global_step < max_steps:
         epoch += 1
 
@@ -327,15 +332,28 @@ def train(
                 metrics["tokens_processed"] = tokens_processed
                 metrics["step_time"] = step_time
 
+                # Update progress bar
+                if accelerator.is_main_process:
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        'loss': f"{metrics['loss']:.4f}",
+                        'lr': f"{metrics['lr']:.2e}",
+                        'tok/s': f"{tokens_per_sec:.0f}",
+                    })
+
                 # Logging
                 if global_step % log_every == 0 and accelerator.is_main_process:
                     elapsed = time.time() - start_time
-                    print(
+                    hours = elapsed / 3600
+                    tokens_billion = tokens_processed / 1e9
+
+                    pbar.write(
                         f"[Step {global_step}/{max_steps}] "
                         f"Loss: {metrics['loss']:.4f} | "
                         f"LR: {metrics['lr']:.2e} | "
                         f"Tokens/sec: {tokens_per_sec:.0f} | "
-                        f"Time: {elapsed:.0f}s"
+                        f"Time: {hours:.1f}h | "
+                        f"Tokens: {tokens_billion:.2f}B"
                     )
 
                     # Log to file
@@ -389,6 +407,10 @@ def train(
         # End of epoch
         if global_step >= max_steps:
             break
+
+    # Close progress bar
+    if accelerator.is_main_process:
+        pbar.close()
 
     # Final checkpoint
     if accelerator.is_main_process:
