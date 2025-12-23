@@ -74,7 +74,10 @@ def train_step(
 
     supervision_losses = []
 
-    # CRITICAL: Deep supervision loop with IMMEDIATE backprop to save memory
+    # Accumulate losses from all supervision steps, then backprop once
+    # This is simpler and avoids retain_graph issues
+    total_loss = 0.0
+
     for sup_step in range(n_sup):
         # Refinement loops
         current_input = torch.cat([x_embeds, z_embeds], dim=1)
@@ -89,29 +92,29 @@ def train_step(
                 current_input = torch.cat([x_embeds, z_embeds], dim=1)
 
         # Autoregressive generation loss
-        with accelerator.accumulate(model):
-            logits_y = unwrapped_model.forward_ar(current_input, y_ids)
+        logits_y = unwrapped_model.forward_ar(current_input, y_ids)
 
-            # Compute cross-entropy loss
-            shift_logits = logits_y[:, :-1, :].contiguous()
-            shift_labels = y_ids[:, 1:].contiguous()
+        # Compute cross-entropy loss
+        shift_logits = logits_y[:, :-1, :].contiguous()
+        shift_labels = y_ids[:, 1:].contiguous()
 
-            loss = nn.functional.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-                reduction='mean'
-            )
+        loss = nn.functional.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            reduction='mean'
+        )
 
-            # Scale loss by n_sup (so average is correct)
-            scaled_loss = loss / n_sup
+        total_loss = total_loss + loss
+        supervision_losses.append(loss.item())
 
-            # CRITICAL: Backward pass INSIDE the loop to free memory
-            accelerator.backward(scaled_loss)
-
-            supervision_losses.append(loss.item())
-
-        # Detach latents for next supervision step
+        # Detach latents for next supervision step to break computation graph
         z_embeds = z_embeds.detach()
+
+    # Average loss and backward once
+    avg_loss = total_loss / n_sup
+
+    with accelerator.accumulate(model):
+        accelerator.backward(avg_loss)
 
     # Gradient clipping and optimizer step (after all supervision steps)
     with accelerator.accumulate(model):
