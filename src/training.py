@@ -359,8 +359,19 @@ def train(
                     # Log to file
                     logger.log(global_step, epoch, metrics)
 
+                    # Prepare wandb metrics (scalars only, no lists)
+                    wandb_metrics = {
+                        "train/loss": metrics['loss'],
+                        "train/lr": metrics['lr'],
+                        "train/tokens_per_sec": tokens_per_sec,
+                        "train/tokens_processed": tokens_processed,
+                        "train/step_time": step_time,
+                    }
+                    if "avg_supervision_loss" in metrics:
+                        wandb_metrics["train/avg_supervision_loss"] = metrics["avg_supervision_loss"]
+
                     # Log to WandB
-                    log_metrics(metrics, global_step, accelerator)
+                    log_metrics(wandb_metrics, global_step, accelerator)
 
                 # Evaluation
                 if eval_dataloader is not None and global_step % eval_every == 0:

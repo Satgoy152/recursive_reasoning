@@ -42,13 +42,13 @@ def main():
         learning_rate=3e-4,
         weight_decay=0.1,
         warmup_steps=2000,
-        target_tokens=10_000_000_000,  # 10B tokens
-        batch_size_per_gpu=4,  # VERY small to avoid OOM
-        gradient_accumulation_steps=8,  # Effective batch = 4 * 8 * 2 GPUs = 64
+        target_tokens=1_000_000_000,  # 1B tokens for faster iteration (change this!)
+        batch_size_per_gpu=8,  # Increased from 4 - test if this works
+        gradient_accumulation_steps=4,  # Reduced from 8 - faster steps
         max_grad_norm=1.0,
         checkpoint_every=5000,
         eval_every=2000,
-        log_every=100,
+        log_every=10,  # More frequent logging to see progress
         eval_samples=1000,
         mixed_precision="bf16",  # BF16 for A40
         seed=42,
