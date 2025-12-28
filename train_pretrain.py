@@ -228,6 +228,11 @@ def main():
     # Training Loop
     # ========================================================================
 
+    # Wait for all processes to finish data skipping/loading before starting
+    if accelerator.is_main_process:
+        print("Waiting for all processes to be ready...")
+    accelerator.wait_for_everyone()
+
     train(
         model=model,
         train_dataloader=train_dataloader,
