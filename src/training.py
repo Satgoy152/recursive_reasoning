@@ -328,6 +328,25 @@ def train(
                 tokens_processed += tokens_this_step
                 tokens_per_sec = tokens_this_step / step_time
 
+                # Calculate estimated FLOPS
+                # P = params
+                # Effective tokens = batch * n_sup * (t_loops * (Lx + Lz) + (Lx + Lz + Ly))
+                n_params = get_num_parameters(model)
+                Lx = model_config.seq_len_x
+                Ly = model_config.seq_len_y
+                Lz = model_config.n_latents
+                n_sup = model_config.n_sup
+                t_loops = model_config.t_loops
+                
+                # Tokens passed through transformer per sample per supervision step
+                # Refine: t_loops * (Lx + Lz)
+                # AR: (Lx + Lz + Ly)
+                tokens_per_sample_per_sup = t_loops * (Lx + Lz) + (Lx + Lz + Ly)
+                total_effective_tokens = batch_size * accelerator.num_processes * n_sup * tokens_per_sample_per_sup
+                
+                flops_this_step = 6 * n_params * total_effective_tokens
+                metrics["estimated_flops"] = flops_this_step
+
                 metrics["tokens_per_sec"] = tokens_per_sec
                 metrics["tokens_processed"] = tokens_processed
                 metrics["step_time"] = step_time
@@ -340,6 +359,31 @@ def train(
                         'lr': f"{metrics['lr']:.2e}",
                         'tok/s': f"{tokens_per_sec:.0f}",
                     })
+
+                # Evaluation (Run before logging so we can include eval metrics)
+                if eval_dataloader is not None and global_step % eval_every == 0:
+                    if accelerator.is_main_process:
+                        print(f"\n[Step {global_step}] Running evaluation...")
+
+                    eval_metrics = evaluate(
+                        model=model,
+                        dataloader=eval_dataloader,
+                        accelerator=accelerator,
+                        max_eval_steps=100,  # Limit eval steps for speed
+                    )
+
+                    if accelerator.is_main_process:
+                        print(
+                            f"[Step {global_step}] "
+                            f"Eval Loss: {eval_metrics['eval_loss']:.4f} | "
+                            f"Eval Perplexity: {eval_metrics['eval_perplexity']:.2f}\n"
+                        )
+
+                    # Add eval metrics to current metrics for logging
+                    metrics.update(eval_metrics)
+                    
+                    # Log eval metrics to WandB immediately
+                    log_metrics(eval_metrics, global_step, accelerator)
 
                 # Logging
                 if global_step % log_every == 0 and accelerator.is_main_process:
@@ -366,34 +410,13 @@ def train(
                         "train/tokens_per_sec": tokens_per_sec,
                         "train/tokens_processed": tokens_processed,
                         "train/step_time": step_time,
+                        "train/estimated_flops": flops_this_step,
                     }
                     if "avg_supervision_loss" in metrics:
                         wandb_metrics["train/avg_supervision_loss"] = metrics["avg_supervision_loss"]
 
                     # Log to WandB
                     log_metrics(wandb_metrics, global_step, accelerator)
-
-                # Evaluation
-                if eval_dataloader is not None and global_step % eval_every == 0:
-                    if accelerator.is_main_process:
-                        print(f"\n[Step {global_step}] Running evaluation...")
-
-                    eval_metrics = evaluate(
-                        model=model,
-                        dataloader=eval_dataloader,
-                        accelerator=accelerator,
-                        max_eval_steps=100,  # Limit eval steps for speed
-                    )
-
-                    if accelerator.is_main_process:
-                        print(
-                            f"[Step {global_step}] "
-                            f"Eval Loss: {eval_metrics['eval_loss']:.4f} | "
-                            f"Eval Perplexity: {eval_metrics['eval_perplexity']:.2f}\n"
-                        )
-
-                    # Log eval metrics
-                    log_metrics(eval_metrics, global_step, accelerator)
 
                 # Checkpointing
                 if global_step % checkpoint_every == 0:
