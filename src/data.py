@@ -5,7 +5,7 @@ from typing import Iterator, Optional, Tuple
 import torch
 from datasets import load_dataset
 from torch.utils.data import IterableDataset, DataLoader
-from transformers import GPT2Tokenizer
+from transformers import GPT2TokenizerFast as GPT2Tokenizer
 
 from .config import ModelConfig, PretrainingConfig, InstructionTuningConfig
 
@@ -92,7 +92,8 @@ class StreamingPretrainingDataset(IterableDataset):
                 # If we still need to skip, just discard the chunk
                 if chunks_yielded < self.skip_samples:
                     # Discard
-                    print(f"Skipping chunk {chunks_yielded + 1} for resuming...")
+                    if (chunks_yielded + 1) % 1000 == 0:
+                        print(f"Skipping chunk {chunks_yielded + 1}/{self.skip_samples} for resuming...")
                     token_buffer = token_buffer[self.total_seq_len:]
                     chunks_yielded += 1
                     continue
