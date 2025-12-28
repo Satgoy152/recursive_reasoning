@@ -92,6 +92,7 @@ class StreamingPretrainingDataset(IterableDataset):
                 # If we still need to skip, just discard the chunk
                 if chunks_yielded < self.skip_samples:
                     # Discard
+                    print(f"Skipping chunk {chunks_yielded + 1} for resuming...")
                     token_buffer = token_buffer[self.total_seq_len:]
                     chunks_yielded += 1
                     continue
