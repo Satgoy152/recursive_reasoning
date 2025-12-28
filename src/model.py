@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from transformers import GPT2Config
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block
@@ -180,32 +181,68 @@ class GPT2AttentionWithRoPE(nn.Module):
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
 
-        # Compute attention
-        attn_weights = torch.matmul(query, key.transpose(-1, -2))
-        attn_weights = attn_weights / math.sqrt(self.head_dim)
-
-        # CRITICAL FIX: Conditional masking for bidirectional reasoning
-        # During refinement (use_causal_mask=False), latent tokens can attend to all tokens
-        # During autoregressive generation (use_causal_mask=True), enforce causality
-        if use_causal_mask:
-            causal_mask = self.bias[:, :, :seq_len, :seq_len]
-            attn_weights = torch.where(
-                causal_mask,
-                attn_weights,
-                torch.tensor(-1e4, dtype=attn_weights.dtype, device=attn_weights.device)
-            )
-
+        # Use PyTorch 2.0 Scaled Dot Product Attention (Flash Attention compatible)
+        # This is much faster and memory efficient than manual implementation
+        
+        # Handle attention mask if provided (e.g. for padding)
+        # Note: GPT2 attention mask is usually (batch, 1, 1, seq_len)
+        # SDPA expects (batch, n_head, seq_len, seq_len) or broadcastable
+        
+        # If use_causal_mask is True, we want causal attention.
+        # If use_causal_mask is False, we want bidirectional attention.
+        
+        # If attention_mask is provided, we need to combine it with causal mask if needed.
+        # But for pretraining with packed sequences, attention_mask is usually None.
+        
         if attention_mask is not None:
+            # If we have an explicit mask, we can't easily use is_causal=True
+            # We need to manually construct the mask
+            if use_causal_mask:
+                # Create causal mask
+                causal_mask = self.bias[:, :, :seq_len, :seq_len].bool()
+                # Combine with attention_mask (which is usually 0 for keep, -inf for mask, or 1/0)
+                # GPT2 attention_mask is 1.0 for keep, 0.0 for mask (converted to large negative in model)
+                # Wait, in GPT2ModelWithRoPE.forward, attention_mask is converted to large negative.
+                
+                # Let's fallback to manual implementation if attention_mask is present to be safe
+                # or try to use SDPA with attn_mask
+                pass
+            
+            # Fallback to manual for complex masking scenarios
+            attn_weights = torch.matmul(query, key.transpose(-1, -2))
+            attn_weights = attn_weights / math.sqrt(self.head_dim)
+
+            if use_causal_mask:
+                causal_mask = self.bias[:, :, :seq_len, :seq_len]
+                attn_weights = torch.where(
+                    causal_mask,
+                    attn_weights,
+                    torch.tensor(-1e4, dtype=attn_weights.dtype, device=attn_weights.device)
+                )
+
             attn_weights = attn_weights + attention_mask
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+            attn_weights = self.attn_dropout(attn_weights)
+            
+            if head_mask is not None:
+                attn_weights = attn_weights * head_mask
+                
+            attn_output = torch.matmul(attn_weights, value)
+            
+        else:
+            # Fast path with SDPA
+            attn_output = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask=None,
+                dropout_p=self.attn_dropout.p if self.training else 0.0,
+                is_causal=use_causal_mask
+            )
+            
+            # We don't have weights in SDPA, so we return None for weights
+            attn_weights = None
 
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
-        attn_weights = self.attn_dropout(attn_weights)
-
-        # Apply head mask if provided
-        if head_mask is not None:
-            attn_weights = attn_weights * head_mask
-
-        attn_output = torch.matmul(attn_weights, value)
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
