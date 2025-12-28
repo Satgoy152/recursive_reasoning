@@ -260,7 +260,7 @@ class MetricsLogger:
 
         # Initialize log file
         with open(log_file, "w") as f:
-            f.write("step,epoch,loss,lr,tokens_per_sec\n")
+            f.write("step,epoch,train_loss,lr,tokens_per_sec,tokens_processed,estimated_flops,eval_loss\n")
 
     def log(self, step: int, epoch: int, metrics: Dict[str, Any]):
         """Log metrics to file and memory."""
@@ -268,10 +268,14 @@ class MetricsLogger:
 
         # Write to file
         with open(self.log_file, "a") as f:
-            loss = metrics.get("loss", 0.0)
+            train_loss = metrics.get("loss", 0.0)
             lr = metrics.get("lr", 0.0)
             tokens_per_sec = metrics.get("tokens_per_sec", 0.0)
-            f.write(f"{step},{epoch},{loss},{lr},{tokens_per_sec}\n")
+            tokens_processed = metrics.get("tokens_processed", 0)
+            estimated_flops = metrics.get("estimated_flops", 0.0)
+            eval_loss = metrics.get("eval_loss", "")
+            
+            f.write(f"{step},{epoch},{train_loss},{lr},{tokens_per_sec},{tokens_processed},{estimated_flops},{eval_loss}\n")
 
     def save_json(self, output_path: str):
         """Save metrics history as JSON."""
