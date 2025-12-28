@@ -1,7 +1,11 @@
 """Pretraining script for HybridTRM - designed for multi-GPU with accelerate launch."""
 
+import os
+# Set NCCL timeout to 2 hours to handle long data skipping/resuming times
+os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "7200"
+
 import torch
-from transformers import GPT2Tokenizer
+from transformers import GPT2TokenizerFast as GPT2Tokenizer
 from accelerate import Accelerator
 
 from src.config import ModelConfig, PretrainingConfig, WandbConfig
