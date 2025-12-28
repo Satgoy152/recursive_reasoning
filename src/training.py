@@ -15,6 +15,7 @@ from .utils import (
     save_checkpoint,
     estimate_tokens_processed,
     MetricsLogger,
+    get_num_parameters,
 )
 
 
