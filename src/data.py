@@ -32,6 +32,9 @@ class StreamingPretrainingDataset(IterableDataset):
         seq_len_y: int,
         split: str = "train",
         seed: int = 42,
+        skip_samples: int = 0,
+        num_shards: int = 1,
+        shard_idx: int = 0,
     ):
         self.dataset_name = dataset_name
         self.dataset_subset = dataset_subset
@@ -40,6 +43,9 @@ class StreamingPretrainingDataset(IterableDataset):
         self.seq_len_y = seq_len_y
         self.split = split
         self.seed = seed
+        self.skip_samples = skip_samples
+        self.num_shards = num_shards
+        self.shard_idx = shard_idx
         self.total_seq_len = seq_len_x + seq_len_y
 
     def __iter__(self) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
@@ -54,11 +60,27 @@ class StreamingPretrainingDataset(IterableDataset):
 
         # Shuffle with seed
         dataset = dataset.shuffle(seed=self.seed, buffer_size=10_000)
-
+        
+        # Shard the dataset for distributed training
+        # We use the built-in sharding for IterableDataset if available, 
+        # or we manually skip examples.
+        # For streaming datasets, we can use skip/take logic, but it's inefficient.
+        # A better way is to use the `shard` method if supported, but for streaming 
+        # it's often better to just rely on the fact that we can skip.
+        
+        # Actually, HuggingFace streaming datasets don't support .shard() easily.
+        # The standard way is to use `split` parameter if possible, or just filter.
+        # Here we will use a simple modulo filter on the examples.
+        
         # Buffer for accumulating tokens
         token_buffer = []
+        chunks_yielded = 0
+        
+        for i, example in enumerate(dataset):
+            # Distributed Sharding: Only process examples that belong to this shard
+            if i % self.num_shards != self.shard_idx:
+                continue
 
-        for example in dataset:
             # Tokenize text
             text = example["text"]
             tokens = self.tokenizer.encode(text, add_special_tokens=False)
@@ -67,6 +89,14 @@ class StreamingPretrainingDataset(IterableDataset):
 
             # Yield chunks when we have enough tokens
             while len(token_buffer) >= self.total_seq_len:
+                # If we still need to skip, just discard the chunk
+                if chunks_yielded < self.skip_samples:
+                    # Discard
+                    token_buffer = token_buffer[self.total_seq_len:]
+                    chunks_yielded += 1
+                    continue
+                
+                # Otherwise yield it
                 chunk = token_buffer[:self.total_seq_len]
                 token_buffer = token_buffer[self.total_seq_len:]
 
@@ -86,6 +116,9 @@ def get_pretrain_dataloader(
     model_config: ModelConfig,
     tokenizer: GPT2Tokenizer,
     split: str = "train",
+    skip_samples: int = 0,
+    num_shards: int = 1,
+    shard_idx: int = 0,
 ) -> DataLoader:
     """
     Create dataloader for pretraining.
@@ -95,6 +128,9 @@ def get_pretrain_dataloader(
         model_config: Model configuration
         tokenizer: GPT2 tokenizer
         split: Dataset split ("train" or "validation")
+        skip_samples: Number of samples to skip (for resuming)
+        num_shards: Total number of GPU processes
+        shard_idx: Rank of current process
 
     Returns:
         DataLoader for streaming pretraining data
@@ -107,6 +143,9 @@ def get_pretrain_dataloader(
         seq_len_y=model_config.seq_len_y,
         split=split,
         seed=config.seed,
+        skip_samples=skip_samples,
+        num_shards=num_shards,
+        shard_idx=shard_idx,
     )
 
     # Note: batch_size handled per-GPU by Accelerator

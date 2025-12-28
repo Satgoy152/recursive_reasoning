@@ -232,7 +232,24 @@ def get_latest_checkpoint(checkpoint_dir: str) -> Optional[str]:
         return None
 
     # Find all .pt files
+    # We look for both step checkpoints and the final checkpoint
     checkpoints = list(checkpoint_dir.glob("checkpoint_step_*.pt"))
+    final_checkpoint = checkpoint_dir / "checkpoint_final.pt"
+
+    if final_checkpoint.exists():
+        # If final checkpoint exists, check if it's newer than the latest step checkpoint
+        # Actually, final checkpoint should always be preferred if we want to resume from the very end
+        # But wait, if we are resuming training, maybe we want the latest step?
+        # Usually final checkpoint IS the latest state.
+        
+        # Let's check if there are any step checkpoints
+        if not checkpoints:
+            return str(final_checkpoint)
+            
+        # If we have both, compare timestamps or just assume final is latest?
+        # Let's parse the step from the final checkpoint if possible, or just return it.
+        # Simpler logic: If final exists, return it.
+        return str(final_checkpoint)
 
     if not checkpoints:
         return None

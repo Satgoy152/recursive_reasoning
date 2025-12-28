@@ -103,27 +103,11 @@ def main():
         print_model_info(model)
 
     # ========================================================================
-    # Initialize Tokenizer and Dataloaders
+    # Initialize Tokenizer
     # ========================================================================
 
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
-
-    # Training dataloader
-    train_dataloader = get_pretrain_dataloader(
-        config=train_config,
-        model_config=model_config,
-        tokenizer=tokenizer,
-        split="train",
-    )
-
-    # Skip validation dataset for now to save memory
-    # We'll create it on-the-fly during evaluation
-    eval_dataloader = None
-
-    if accelerator.is_main_process:
-        print(f"✓ Dataloaders initialized")
-        print(f"  Eval: Will sample on-the-fly during eval steps")
 
     # ========================================================================
     # Initialize Optimizer and Scheduler
@@ -156,17 +140,6 @@ def main():
         print(f"  Tokens per step: {tokens_per_step:,}")
 
     # ========================================================================
-    # Prepare for Distributed Training
-    # ========================================================================
-
-    model, optimizer, train_dataloader, eval_dataloader, scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader, scheduler
-    )
-
-    if accelerator.is_main_process:
-        print("✓ Model and dataloaders prepared for distributed training")
-
-    # ========================================================================
     # Load Checkpoint (if resuming)
     # ========================================================================
 
@@ -178,12 +151,14 @@ def main():
         if latest_checkpoint:
             if accelerator.is_main_process:
                 print(f"Resuming from checkpoint: {latest_checkpoint}")
+            # Note: We load into the raw model/optimizer before prepare()
+            # This works because state_dicts are compatible
             metadata = load_checkpoint(
                 path=latest_checkpoint,
                 model=model,
                 optimizer=optimizer,
                 scheduler=scheduler,
-                accelerator=accelerator,
+                accelerator=None, # Pass None because model is not yet wrapped
             )
             start_step = metadata["step"]
             start_epoch = metadata["epoch"]
@@ -193,6 +168,50 @@ def main():
     else:
         if accelerator.is_main_process:
             print("Starting training from scratch")
+
+    # ========================================================================
+    # Initialize Dataloaders (with skip logic)
+    # ========================================================================
+
+    # Calculate how many samples to skip based on start_step
+    # Each step consumes: batch_size * num_gpus * gradient_accumulation_steps samples
+    # Note: This assumes the batch size hasn't changed between runs.
+    
+    # If each process gets its own unique stream (e.g. by sharding), then each process needs to skip:
+    # start_step * batch_size_per_gpu * gradient_accumulation_steps
+    
+    samples_to_skip_per_process = start_step * train_config.batch_size_per_gpu * train_config.gradient_accumulation_steps
+
+    if accelerator.is_main_process and samples_to_skip_per_process > 0:
+        print(f"Skipping {samples_to_skip_per_process:,} samples to resume training...")
+
+    # Training dataloader
+    train_dataloader = get_pretrain_dataloader(
+        config=train_config,
+        model_config=model_config,
+        tokenizer=tokenizer,
+        split="train",
+        skip_samples=samples_to_skip_per_process,
+        num_shards=accelerator.num_processes,
+        shard_idx=accelerator.process_index,
+    )
+
+    # Skip validation dataset for now to save memory
+    eval_dataloader = None
+
+    if accelerator.is_main_process:
+        print(f"✓ Dataloaders initialized")
+
+    # ========================================================================
+    # Prepare for Distributed Training
+    # ========================================================================
+
+    model, optimizer, train_dataloader, eval_dataloader, scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader, scheduler
+    )
+
+    if accelerator.is_main_process:
+        print("✓ Model and dataloaders prepared for distributed training")
 
     # ========================================================================
     # Initialize Weights & Biases
