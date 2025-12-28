@@ -1,3 +1,6 @@
 wandb/
 src/__pycache__
 logs/
+checkpoints/
+*.err
+*.out

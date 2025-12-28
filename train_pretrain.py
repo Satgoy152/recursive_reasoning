@@ -32,7 +32,7 @@ def main():
         seq_len_x=512,
         seq_len_y=512,
         use_rope=True,
-        gradient_checkpointing=True,  # Enabled for memory efficiency
+        gradient_checkpointing=False,  # Enabled for memory efficiency
     )
 
     # Pretraining configuration
@@ -41,14 +41,14 @@ def main():
         dataset_subset="sample-10BT",
         learning_rate=3e-4,
         weight_decay=0.1,
-        warmup_steps=2000,
-        target_tokens=1_000_000_000,  # 1B tokens for faster iteration (change this!)
-        batch_size_per_gpu=16,  # Increased from 8 - thanks to gradient checkpointing
-        gradient_accumulation_steps=2,  # Adjusted for 4 GPUs (16*2*4 = 128 effective batch)
+        warmup_steps=300,
+        target_tokens=2_500_000_000,  # 1B tokens for faster iteration (change this!)
+        batch_size_per_gpu=8,  # Increased from 8 - thanks to gradient checkpointing
+        gradient_accumulation_steps=4,  # Adjusted for 4 GPUs (16*2*4 = 128 effective batch)
         max_grad_norm=1.0,
-        checkpoint_every=5000,
-        eval_every=2000,
-        log_every=100,  # More frequent logging to see progress
+        checkpoint_every=2500,
+        eval_every=500,
+        log_every=10,  # More frequent logging to see progress
         eval_samples=1000,
         mixed_precision="bf16",  # BF16 for A40
         seed=42,
