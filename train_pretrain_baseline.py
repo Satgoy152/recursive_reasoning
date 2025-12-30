@@ -34,6 +34,7 @@ def main():
         base_model="gpt2",  # GPT-2 Small (124M)
         seq_len_x=512,
         seq_len_y=512,
+        gradient_checkpointing=False,
     )
 
     # Pretraining configuration - SAME as train_pretrain.py
@@ -109,16 +110,16 @@ def main():
         activation_function="gelu_new",
         resid_pdrop=0.1,
         embd_pdrop=0.1,
-        attn_pdrop=0.1,
         use_cache=False, # Gradient checkpointing usually requires this off or handled carefully
     )
 
-    if train_config.gradient_checkpointing:
+    if model_config.gradient_checkpointing:
         gpt2_config.use_cache = False
         
     model = GPT2LMHeadModel(gpt2_config)
     
-    if train_config.gradient_checkpointing:
+    if model_config.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
         model.gradient_checkpointing_enable()
 
     if accelerator.is_main_process:
