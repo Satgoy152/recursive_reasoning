@@ -170,7 +170,7 @@ def main():
 
     # Initialize WandB
     if accelerator.is_main_process:
-        setup_wandb(wandb_config, {**train_config.__dict__, "model_type": "gpt2-baseline"})
+        setup_wandb(wandb_config, train_config, model_config, accelerator)
 
     # ========================================================================
     # Training Loop
