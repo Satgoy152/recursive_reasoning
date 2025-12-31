@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=train_pretrain
-#SBATCH --output=train_%j.out
-#SBATCH --error=train_%j.err
+#SBATCH --job-name=train_pretrain_baseline_2.5b
+#SBATCH --output=train_baseline2.5b%j.out
+#SBATCH --error=train_baseline2.5b%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
@@ -14,4 +14,4 @@
 source /home/sagoyal/research/recursive_reasoning/.venv/bin/activate
 
 # Already in the right directory, just run the command
-accelerate launch --num_processes=4 --mixed_precision=bf16 train_pretrain.py
+accelerate launch --num_processes=4 --mixed_precision=bf16 train_pretrain_baseline.py
